@@ -79,12 +79,12 @@ runs:
         # AnyKernel3
         AK3_COMMIT=$(get_commit "https://github.com/WildKernels/AnyKernel3.git" "refs/heads/gki-2.0")
         echo "AnyKernel3: $AK3_COMMIT"
-        echo "anykernel_commit=$AK3_COMMIT" >> $GITHUB_OUTPUT
+        echo "anykernel_commit=d1ebdc2002c557ceff9939afc3098eb88916f464" >> $GITHUB_OUTPUT
         
         # Kernel Patches
         PATCHES_COMMIT=$(get_commit "https://github.com/WildKernels/kernel_patches.git" "HEAD")
         echo "Kernel Patches: $PATCHES_COMMIT"
-        echo "patches_commit=$PATCHES_COMMIT" >> $GITHUB_OUTPUT
+        echo "patches_commit=98783ea65ce09564650a28c2942881b98612b254" >> $GITHUB_OUTPUT
         
         # SUSFS (using gitlab) - Fetch all relevant branches
         SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
@@ -123,4 +123,4 @@ runs:
         # BBG
         BBG_COMMIT=$(get_commit "https://github.com/vc-teahouse/Baseband-guard.git" "refs/heads/main")
         echo "BBG: $BBG_COMMIT"
-        echo "bbg_commit=$BBG_COMMIT" >> $GITHUB_OUTPUT
+        echo "bbg_commit=8cb6b7f4c21d02478e83fb286c5e9f941c82ffbb" >> $GITHUB_OUTPUT
