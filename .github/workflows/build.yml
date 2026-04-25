@@ -316,6 +316,9 @@ jobs:
       uses: ./.github/actions/clean-kernel-flags
 
     - name: Build Kernel
+      env:
+        KSU_NEXT_MANAGER_SIZE: ${{ env.KSU_NEXT_MANAGER_SIZE }}
+        KSU_NEXT_MANAGER_HASH: ${{ env.KSU_NEXT_MANAGER_HASH }}
       working-directory: ${{ github.workspace }}/kernel
       run: |
         set -ex
