@@ -118,7 +118,7 @@ runs:
           fi
         done
         
-        echo "susfs_commit=$SUSFS_MAP" >> $GITHUB_OUTPUT
+        echo "susfs_commit=gki-android12-5.10:4b4faed83eee98be8ca8d3fd71751ce5a82cc5f2,gki-android13-5.10:c0fff6ae50c11633f77b3f1a59e43f2dddb46675,gki-android13-5.15:020aaf95aad0138fa2c3d671fe13bd3f3ddf8541,gki-android14-5.15:eab42e61b3222b552d4d824bdfa9a4c4fa0f1387,gki-android14-6.1:6cbc44c6f9263c021e75c3ea451af2d986765582,gki-android15-6.6:e8d48c9b0120eb4d2bbddf7930e90a090b99f953,gki-android16-6.12:6506734c6080f21fa0d370b78ed62353897fdead" >> $GITHUB_OUTPUT
         
         # BBG
         BBG_COMMIT=$(get_commit "https://github.com/vc-teahouse/Baseband-guard.git" "refs/heads/main")
