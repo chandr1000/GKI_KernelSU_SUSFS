@@ -186,6 +186,26 @@ jobs:
       with:
         mode: verify
 
+    - name: Inject custom KSU manager signature list
+      if: contains(inputs.feature_set, 'KSUN') || inputs.feature_set == 'FULL'
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      run: |
+        set -euo pipefail
+        KBUILD_FILE="KernelSU-Next/kernel/Kbuild"
+        if [ ! -f "$KBUILD_FILE" ]; then
+          echo "::error::Kbuild not found at $KBUILD_FILE — was Setup KernelSU-Next step skipped?"
+          exit 1
+        fi
+        NEW_LIST="${{ vars.KSU_NEXT_MANAGER_LIST }}"
+        if [ -z "$NEW_LIST" ]; then
+          echo "::warning::repo variable KSU_NEXT_MANAGER_LIST is empty; using Kbuild defaults"
+          exit 0
+        fi
+        sed -i "s|^KSU_NEXT_MANAGER_LIST := .*|KSU_NEXT_MANAGER_LIST := ${NEW_LIST}|" "$KBUILD_FILE"
+        echo "Patched Kbuild with KSU_NEXT_MANAGER_LIST:"
+        grep -n '^KSU_NEXT_MANAGER_LIST :=' "$KBUILD_FILE"
+
     - name: SUSFS
       if: contains(inputs.feature_set, 'SUSFS') || inputs.feature_set == 'FULL'
       uses: ./.github/actions/susfs
