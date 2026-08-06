@@ -297,6 +297,8 @@ jobs:
         android_version: ${{ inputs.android_version }}
         version: ${{ inputs.version }}
         sublevel: ${{ steps.extract.outputs.sublevel }}
+        ksu_commit: ${{ env.KSU_COMMIT }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
     - name: Remove Protected Exports
       if: ${{ !inputs.preserve_abi }}
@@ -411,6 +413,8 @@ jobs:
       with:
         version: ${{ inputs.version }}
         bypass: false
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
     - name: Get Cache Stats
       uses: ./.github/actions/cache-stats
@@ -448,6 +452,8 @@ jobs:
       with:
         bypass: true
         version: ${{ inputs.version }}
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
     - name: 📋 Consolidated Build Summary
       if: ${{ always() }}

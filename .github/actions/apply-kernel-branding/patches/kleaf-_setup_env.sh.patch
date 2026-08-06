@@ -1,0 +1,20 @@
+--- a/_setup_env.sh
++++ b/_setup_env.sh
+@@ -93,8 +93,15 @@
+   export SOURCE_DATE_EPOCH=0
+ fi
+ export KBUILD_BUILD_TIMESTAMP="$(date -d @${SOURCE_DATE_EPOCH})"
+-export KBUILD_BUILD_HOST=build-host
+-export KBUILD_BUILD_USER=build-user
++# WILD_BRANDING_PATCHED: prefer .wild_build_host file, then env, then default.
++# ROOT_DIR and KERNEL_DIR are set earlier in this script. The file is
++# written by apply-kernel-branding/action.yml to ${ROOT_DIR}/${KERNEL_DIR}/.
++if [ -f "${ROOT_DIR}/${KERNEL_DIR}/.wild_build_host" ]; then
++  export KBUILD_BUILD_HOST=$(cat "${ROOT_DIR}/${KERNEL_DIR}/.wild_build_host")
++else
++  [ -n "${KBUILD_BUILD_HOST:-}" ] || export KBUILD_BUILD_HOST=build-host
++fi
++[ -n "${KBUILD_BUILD_USER:-}" ] || export KBUILD_BUILD_USER=build-user
+ export KBUILD_BUILD_VERSION=1
+
+ # List of prebuilt directories shell variables to incorporate into PATH

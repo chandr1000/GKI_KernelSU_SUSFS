@@ -7,6 +7,22 @@ inputs:
   version:
     description: 'Kernel config version (e.g., android14-6.1)'
     required: true
+  kbuild_build_user:
+    description: |
+      Value for the KBUILD_BUILD_USER env var. Appears in `uname -v` as
+      the user before the `@` (e.g., `wild@host`).
+      Empty string = use the kernel's default (typically the runner username).
+      Sourced from env.WILD_BUILD_USER (set by kernelsu/action.yml).
+    required: false
+    default: ''
+  kbuild_build_host:
+    description: |
+      Value for the KBUILD_BUILD_HOST env var. Appears in `uname -v` as
+      the host after the `@` (e.g., `wild@host`).
+      Empty string = use the kernel's default (typically the runner hostname).
+      Sourced from env.WILD_BUILD_HOST (set by kernelsu/action.yml).
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -41,7 +57,14 @@ runs:
   - name: 'Build Kernel'
     shell: bash
     working-directory: ${{ github.workspace }}/kernel
+    env:
+      KBUILD_BUILD_USER: ${{ inputs.kbuild_build_user }}
+      KBUILD_BUILD_HOST: ${{ inputs.kbuild_build_host }}
     run: |
+      [ -n "$KBUILD_BUILD_USER" ] && export KBUILD_BUILD_USER
+      [ -n "$KBUILD_BUILD_HOST" ] && export KBUILD_BUILD_HOST
+      echo "KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-(default)}"
+      echo "KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-(default)}"
       sed -i 's/check_defconfig//' ./common/build.config.gki
       if [ -f "build/build.sh" ]; then
         BUILD_GKI_ARTIFACTS="" \
@@ -62,9 +85,13 @@ runs:
         if [ "${{ inputs.bypass }}" = "false" ]; then
           sed -i '/name = "kernel_aarch64",/a\    check_defconfig = "disabled",' common/BUILD.bazel
         fi
+        ACTION_ENV_FLAGS=""
+        [ -n "$KBUILD_BUILD_USER" ] && ACTION_ENV_FLAGS="$ACTION_ENV_FLAGS --action_env=KBUILD_BUILD_USER"
+        [ -n "$KBUILD_BUILD_HOST" ] && ACTION_ENV_FLAGS="$ACTION_ENV_FLAGS --action_env=KBUILD_BUILD_HOST"
         tools/bazel build \
           --config=fast \
           --config=stamp \
+          $ACTION_ENV_FLAGS \
           --disk_cache=/home/runner/.cache/bazel \
           //common:kernel_aarch64/Image
       fi

@@ -1,5 +1,13 @@
 name: 'Apply Kernel Branding & Timestamp'
-description: 'Apply Wild kernel branding to kernel version string'
+description: |
+  Apply Wild kernel branding to the kernel version string without breaking
+  the GKI KMI format. Patches kleaf build files (or wraps scripts/setlocalversion
+  for legacy builds) so that:
+    - uname -r contains -g<ksu_commit>  (instead of the kernel source's HEAD)
+    - uname -r contains a page-size suffix (e.g. -4k) after the commit hash
+    - the -dirty suffix is never appended
+  KBUILD_BUILD_USER / KBUILD_BUILD_HOST for uname -v are NOT handled here;
+  they are propagated by build-kernel/action.yml from env.WILD_BUILD_USER/HOST.
 inputs:
   variant:
     description: 'Variant of kernel to apply branding to'
@@ -16,22 +24,253 @@ inputs:
   sublevel:
     description: 'Sublevel of kernel version (e.g., 1)'
     required: true
+  ksu_commit:
+    description: |
+      KSU commit hash (7-40 hex chars) to embed as `-g<hash>` in uname -r.
+      When provided, the kernel source's own git commit hash is replaced
+      with this value, so users can identify which KSU version is baked in.
+      Empty string = use the kernel source's default git commit hash.
+    required: false
+    default: ''
+  kbuild_build_host:
+    description: |
+      Value for KBUILD_BUILD_HOST. Appears in `uname -v` as the host
+      after the `@` (e.g., `wild@host`). Written to .wild_build_host
+      metadata file so it survives into the bazel sandbox (where
+      --action_env may not reach the KernelEnv action).
+    required: false
+    default: ''
 
 runs:
   using: "composite"
   steps:
-    - name: Apply Kernel Name Branding
+    - name: Apply Kernel Branding
       shell: bash
-      working-directory: ${{ github.workspace }}/kernel/common
+      working-directory: ${{ github.workspace }}/kernel
       run: |
-        VERSION="${{ inputs.version }}"
-        ANDROID_PART=$(echo "$VERSION" | cut -d- -f1)
-        KERNEL_PART=$(echo "$VERSION" | cut -d- -f2)
+        set -euo pipefail
 
-        if [[ ${{ inputs.version }} == "android15-6.6" || ${{ inputs.version }} == "android16-6.12" ]]; then
-          KERNEL_STRING="$KERNEL_PART.${{ inputs.sublevel }}-$ANDROID_PART"
-          sed -i '$d' scripts/setlocalversion && echo "echo \"$KERNEL_STRING-Wild\"" >> scripts/setlocalversion
-        else
-          sed -i '$d' scripts/setlocalversion && echo "echo \"-$ANDROID_PART-Wild\"" >> scripts/setlocalversion
+        KSU_COMMIT="${{ inputs.ksu_commit }}"
+        KBUILD_BUILD_HOST_INPUT="${{ inputs.kbuild_build_host }}"
+
+        echo "::group::Wild kernel branding"
+        echo "Inputs:"
+        echo "  ksu_commit:       ${KSU_COMMIT:-(empty, will use kernel source HEAD)}"
+        echo "  kbuild_build_host: ${KBUILD_BUILD_HOST_INPUT:-(default)}"
+
+        # ── Validate inputs ──
+        if [ -n "$KSU_COMMIT" ]; then
+          if ! printf '%s' "$KSU_COMMIT" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+            echo "::error::ksu_commit '$KSU_COMMIT' is not a valid git commit hash (expected 7-40 hex chars)"
+            exit 1
+          fi
         fi
-        chmod +x scripts/setlocalversion
+
+        # ── Persist branding metadata files in kernel/common/ ──
+        cd common
+
+        if [ -n "$KSU_COMMIT" ]; then
+          KSU_COMMIT_SHORT=$(printf '%.12s' "$KSU_COMMIT")
+          printf '%s' "$KSU_COMMIT_SHORT" > .ksu_commit_hash
+          echo "Wrote .ksu_commit_hash: $(cat .ksu_commit_hash)"
+        else
+          rm -f .ksu_commit_hash
+          echo "No .ksu_commit_hash written (will fall back to kernel source git HEAD)"
+        fi
+
+        if [ -n "$KBUILD_BUILD_HOST_INPUT" ]; then
+          printf '%s' "$KBUILD_BUILD_HOST_INPUT" > .wild_build_host
+          echo "Wrote .wild_build_host: $(cat .wild_build_host)"
+        else
+          rm -f .wild_build_host
+          echo "No .wild_build_host written (KBUILD_BUILD_HOST will default to build-host)"
+        fi
+
+        cd "${{ github.workspace }}/kernel"
+
+        # ── Detect build system ──
+        IS_KLEAF=0
+        if [ ! -f "build/build.sh" ]; then
+          IS_KLEAF=1
+          echo "Detected kleaf (bazel) build system"
+        else
+          echo "Detected legacy (build.sh) build system"
+        fi
+
+        # ════════════════════════════════════════════════════════════════
+        # KLEAF (BAZEL) BUILD PATH
+        # ════════════════════════════════════════════════════════════════
+        if [ "$IS_KLEAF" -eq 1 ]; then
+          echo ""
+          echo "::group::Patching kleaf build files"
+
+          PATCHES_DIR="${{ github.action_path }}/patches"
+
+          # Helper: apply a patch idempotently. Fails loudly if the patch
+          # doesn't apply AND the target isn't already patched.
+          apply_patch() {
+            local patch_file="$1"
+            local target_file="$2"
+            local marker="$3"
+
+            if [ ! -f "$target_file" ]; then
+              echo "::warning::$target_file not found; skipping $(basename "$patch_file")"
+              return 0
+            fi
+            if grep -q "$marker" "$target_file"; then
+              echo "$target_file already patched; skipping"
+              return 0
+            fi
+
+            if patch -p1 --forward --fuzz=3 --no-backup-if-mismatch \
+                 "$target_file" < "$patch_file" 2>/tmp/wild_patch.err; then
+              echo "Patched $target_file"
+            else
+              cat /tmp/wild_patch.err >&2 || true
+              echo "::error::Failed to apply $(basename "$patch_file") to $target_file"
+              echo "::error::The upstream file may have changed. Regenerate the patch."
+              exit 1
+            fi
+
+            if ! grep -q "$marker" "$target_file"; then
+              echo "::error::$target_file missing marker '$marker' after patching"
+              exit 1
+            fi
+          }
+
+          apply_patch \
+            "$PATCHES_DIR/kleaf-workspace_status_stamp.py.patch" \
+            "build/kernel/kleaf/workspace_status_stamp.py" \
+            "WILD_BRANDING_PATCHED"
+
+          # ── Patch kernel_env.bzl: KBUILD_BUILD_USER=wild + KBUILD_BUILD_HOST ──
+          # We use simple sed value replacement (not a .patch file) because
+          # kernel_env.bzl is processed by Python str.format() and structural
+          # changes (braces, if/else, comments with braces) break the build.
+          # Value-only replacements don't change the template structure.
+          KE_BZL="build/kernel/kleaf/impl/kernel_env.bzl"
+          if [ ! -f "$KE_BZL" ]; then
+            echo "::warning::$KE_BZL not found; KBUILD_BUILD_USER/HOST will default"
+          elif grep -q 'export KBUILD_BUILD_USER=wild' "$KE_BZL"; then
+            echo "$KE_BZL already patched (wild); skipping"
+          elif ! grep -q 'export KBUILD_BUILD_USER=kleaf' "$KE_BZL"; then
+            echo "::warning::$KE_BZL doesn't have 'export KBUILD_BUILD_USER=kleaf'; skipping"
+          else
+            # Replace KBUILD_BUILD_USER value (kleaf -> wild)
+            sed -i 's/export KBUILD_BUILD_USER=kleaf/export KBUILD_BUILD_USER=wild/' "$KE_BZL"
+            # Add KBUILD_BUILD_HOST export on the next line (if host value provided).
+            # The sed \n appends a new line after the match. The 10-space indent
+            # matches the kernel_env.bzl template indentation.
+            if [ -n "$KBUILD_BUILD_HOST_INPUT" ]; then
+              sed -i "/export KBUILD_BUILD_USER=wild/a\          export KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST_INPUT" "$KE_BZL"
+            fi
+            if grep -q 'export KBUILD_BUILD_USER=wild' "$KE_BZL"; then
+              echo "Patched $KE_BZL: KBUILD_BUILD_USER=wild, KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST_INPUT"
+            else
+              echo "::error::Failed to patch $KE_BZL with sed"
+              exit 1
+            fi
+          fi
+
+          # ── Patch _setup_env.sh (try multiple candidate paths) ──
+          SETUP_ENV=""
+          for candidate in \
+            "build/kernel/_setup_env.sh" \
+            "build/_setup_env.sh" \
+            "common/_setup_env.sh"; do
+            if [ -f "$candidate" ]; then
+              SETUP_ENV="$candidate"
+              break
+            fi
+          done
+          if [ -z "$SETUP_ENV" ]; then
+            echo "::warning::_setup_env.sh not found in any expected location;"
+            echo "::warning::KBUILD_BUILD_HOST will default to 'build-host'"
+          else
+            SETUP_ENV_DIR=$(dirname "$SETUP_ENV")
+            SETUP_ENV_BASE=$(basename "$SETUP_ENV")
+            (
+              cd "$SETUP_ENV_DIR"
+              if grep -q "WILD_BRANDING_PATCHED" "$SETUP_ENV_BASE"; then
+                echo "$SETUP_ENV already patched; skipping"
+              elif patch -p0 --forward --fuzz=3 --no-backup-if-mismatch \
+                   "$SETUP_ENV_BASE" < "$PATCHES_DIR/kleaf-_setup_env.sh.patch" 2>/tmp/wild_patch.err; then
+                echo "Patched $SETUP_ENV"
+              else
+                cat /tmp/wild_patch.err >&2 || true
+                echo "::error::Failed to apply kleaf-_setup_env.sh.patch to $SETUP_ENV"
+                exit 1
+              fi
+              if ! grep -q "WILD_BRANDING_PATCHED" "$SETUP_ENV_BASE"; then
+                echo "::error::$SETUP_ENV missing marker after patching"
+                exit 1
+              fi
+              if ! bash -n "$SETUP_ENV_BASE" 2>/dev/null; then
+                echo "::error::$SETUP_ENV has syntax errors after patching"
+                exit 1
+              fi
+            ) || exit 1
+          fi
+
+          echo "::endgroup::"
+        fi
+
+        # ════════════════════════════════════════════════════════════════
+        # LEGACY (BUILD.SH) BUILD PATH
+        # ════════════════════════════════════════════════════════════════
+        if [ "$IS_KLEAF" -eq 0 ]; then
+          echo ""
+          echo "::group::Patching legacy build files"
+
+          cd common
+
+          if [ ! -f scripts/setlocalversion ]; then
+            echo "::warning::scripts/setlocalversion not found; cannot apply branding"
+          elif grep -q 'WILD_BRANDING_WRAPPER' scripts/setlocalversion; then
+            echo "scripts/setlocalversion already wrapped; skipping"
+          else
+            if [ ! -f scripts/setlocalversion.orig ]; then
+              cp scripts/setlocalversion scripts/setlocalversion.orig
+            fi
+
+            # Substitute git rev-parse HEAD with .ksu_commit_hash fallback.
+            sed -i -E \
+              's|git\s+(-C\s+"?\$srctree"?\s+)?rev-parse\s+(--verify\s+)?(--short(=[0-9]+)?\s+)?HEAD|cat "\$srctree/.ksu_commit_hash" 2>/dev/null \|\| &|g' \
+              scripts/setlocalversion.orig || true
+
+            # Strip -dirty everywhere.
+            sed -i 's/-dirty//g' scripts/setlocalversion.orig
+
+            if ! sh -n scripts/setlocalversion.orig 2>/dev/null; then
+              echo "::error::scripts/setlocalversion.orig has syntax errors after patching"
+              exit 1
+            fi
+            chmod +x scripts/setlocalversion.orig
+
+            # Install the committed wrapper.
+            cp "${{ github.action_path }}/assets/setlocalversion.wild" scripts/setlocalversion
+            chmod +x scripts/setlocalversion
+
+            if ! sh -n scripts/setlocalversion 2>/dev/null; then
+              echo "::error::scripts/setlocalversion (wrapper) has syntax errors"
+              exit 1
+            fi
+            echo "Wrapped scripts/setlocalversion for legacy build"
+          fi
+
+          cd "${{ github.workspace }}/kernel"
+          echo "::endgroup::"
+        fi
+
+        echo "::endgroup::"
+
+        echo "::notice::Wild branding applied"
+        if [ "$IS_KLEAF" -eq 1 ]; then
+          echo "  Build system:      kleaf (bazel)"
+          echo "  Patched:           workspace_status_stamp.py, kernel_env.bzl, _setup_env.sh"
+        else
+          echo "  Build system:      legacy (build.sh)"
+          echo "  Patched:           scripts/setlocalversion (wrapper + .orig)"
+        fi
+        echo "  Commit hash:       ${KSU_COMMIT:+KSU commit}${KSU_COMMIT:-kernel source git HEAD}"
+        echo "  Build host:        ${KBUILD_BUILD_HOST_INPUT:-(default)}"

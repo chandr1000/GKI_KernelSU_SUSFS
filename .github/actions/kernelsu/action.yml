@@ -75,12 +75,26 @@ runs:
         BASE_COMMIT=$(git merge-base HEAD refs/remotes/origin/$BASE_BRANCH 2>/dev/null || git merge-base HEAD refs/remotes/origin/main 2>/dev/null || echo HEAD)
         KSU_GIT_VERSION=$(git rev-list --count $BASE_COMMIT 2>/dev/null)
         KSU_GIT_TAG=$(git describe --tags --abbrev=0 $BASE_COMMIT 2>/dev/null || echo "")
-        KSU_COMMIT=$(git rev-parse --short HEAD 2>/dev/null)
+        KSU_COMMIT=$(git rev-parse --short=12 HEAD 2>/dev/null)
         KSU_VERSION=$((30000 + KSU_GIT_VERSION))
-        
+
         echo "KSU_GIT_TAG=$KSU_GIT_TAG" >> $GITHUB_ENV
         echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
         echo "KSU_COMMIT=$KSU_COMMIT" >> $GITHUB_ENV
+
+        # Compute Wild branding env vars for uname -v.
+        KSU_REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+        KSU_FORK=$(echo "$KSU_REMOTE_URL" \
+          | sed -E 's|.*github\.com[/:]||; s|\.git$||; s|/|-|' \
+          | tr -d '[:space:]')
+        KSU_FORK=${KSU_FORK:-KernelSU-Next}
+
+        WILD_BUILD_USER="wild"
+        WILD_BUILD_HOST="${KSU_FORK}-v${KSU_VERSION}"
+
+        echo "WILD_BUILD_USER=$WILD_BUILD_USER" >> $GITHUB_ENV
+        echo "WILD_BUILD_HOST=$WILD_BUILD_HOST" >> $GITHUB_ENV
+        echo "WILD_KSU_FORK=$KSU_FORK" >> $GITHUB_ENV
 
     - name: 'Fix KernelSU-Next'
       shell: bash
