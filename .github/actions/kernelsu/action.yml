@@ -38,12 +38,12 @@ runs:
         if retry git ls-remote --heads "$KSU_REPO" "$KSU_INPUT" | grep -q .; then
           echo "Using KernelSU-Next branch: $KSU_INPUT"
           curl -LSs --retry 5 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          retry git -C KernelSU-Next/kernel fetch --depth=50 origin "$KSU_INPUT"
+          retry git -C KernelSU-Next/kernel fetch origin "$KSU_INPUT"
           git -C KernelSU-Next/kernel checkout "origin/$KSU_INPUT"
         else
           echo "Using KernelSU-Next commit: $KSU_INPUT"
           curl -LSs --retry 5 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          retry git -C KernelSU-Next/kernel fetch --depth=50 origin "$KSU_INPUT"
+          retry git -C KernelSU-Next/kernel fetch origin "$KSU_INPUT"
           git -C KernelSU-Next/kernel checkout "$KSU_INPUT"
         fi
 
