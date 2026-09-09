@@ -122,6 +122,8 @@ runs:
     - name: Compute root flavor version and Wild branding env
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
+      env:
+        BRAND_RAW: ${{ inputs.brand_name }}
       run: |
         set -euo pipefail
 
@@ -188,10 +190,9 @@ runs:
         fi
 
         # Wild branding env (consumed by apply-kernel-branding/build-kernel).
-        brand_raw="${{ inputs.brand_name }}"
-        brand="$(printf '%s' "$brand_raw" | tr '[:upper:]' '[:lower:]')"
+        brand="$(printf '%s' "$BRAND_RAW" | tr '[:upper:]' '[:lower:]')"
         if ! printf '%s' "$brand" | grep -Eq '^[a-z0-9_.-]{1,32}$'; then
-          echo "::warning::brand_name '$brand_raw' invalid after normalization; falling back to 'wild'"
+          echo "::warning::brand_name '$BRAND_RAW' invalid after normalization; falling back to 'wild'"
           brand="wild"
         fi
 
