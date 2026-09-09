@@ -249,16 +249,29 @@ jobs:
           flavor: ${{ inputs.root_flavor }}
           commit: ${{ inputs.root_commit }}
         brand_name: ${{ inputs.brand_name }}
+        ksu_commit: ${{ env.WILD_KSU_COMMIT }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
 
       - name: Mark No Root build metadata
         if: inputs.root_flavor == 'none'
         shell: bash
+        env:
+          BRAND_RAW: ${{ inputs.brand_name }}
         run: |
+          BRAND="$(printf '%s' "$BRAND_RAW" | tr '[:upper:]' '[:lower:]')"
+          printf '%s' "$BRAND" | grep -Eq '^[a-z0-9_.-]{1,32}$' || BRAND="wild"
           {
             echo "ROOT_IMPLEMENTATION=none"
             echo "ROOT_MANAGER=N/A"
             echo "ROOT_VERSION=N/A"
             echo "ROOT_COMMIT=N/A"
+            # No root: branding falls back to the kernel source's own git HEAD
+            # for uname -r; uname -v still carries the (custom) brand.
+            echo "WILD_KSU_COMMIT="
+            echo "WILD_BUILD_USER=$BRAND"
+            echo "WILD_BUILD_HOST="
+            echo "WILD_KSU_FORK=none"
           } >> "$GITHUB_ENV"
 
       - name: Disable SUSFS for BakaSU without SUSFS feature
@@ -401,6 +414,9 @@ jobs:
           sublevel: ${{ steps.extract.outputs.sublevel }}
           brand_name: ${{ inputs.brand_name }}
           keep_kmi: ${{ inputs.keep_kmi }}
+          ksu_commit: ${{ env.WILD_KSU_COMMIT }}
+          kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
+          kbuild_build_user: ${{ env.WILD_BUILD_USER }}
 
       - name: Remove Protected Exports
         uses: ./.github/actions/remove-protected-exports
@@ -482,12 +498,14 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
-          KBUILD_BUILD_USER: ${{ (inputs.version == 'android15-6.6' || inputs.version == 'android16-6.12') && 'kleaf' || 'build-user' }}
-          KBUILD_BUILD_HOST: build-host
+          KBUILD_BUILD_USER: ${{ env.WILD_BUILD_USER != '' && env.WILD_BUILD_USER || ((inputs.version == 'android15-6.6' || inputs.version == 'android16-6.12') && 'kleaf' || 'build-user') }}
+          KBUILD_BUILD_HOST: ${{ env.WILD_BUILD_HOST != '' && env.WILD_BUILD_HOST || 'build-host' }}
         uses: ./.github/actions/build-kernel
         with:
           version: ${{ inputs.version }}
           page_size: ${{ inputs.page_size }}
+          kbuild_build_user: ${{ env.WILD_BUILD_USER }}
+          kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
       - name: Get Cache Stats
         uses: ./.github/actions/cache-stats
