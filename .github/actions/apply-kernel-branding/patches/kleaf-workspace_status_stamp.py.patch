@@ -1,0 +1,26 @@
+--- a/build/kernel/kleaf/workspace_status_stamp.py
++++ b/build/kernel/kleaf/workspace_status_stamp.py
+@@ -123,17 +123,16 @@
+
+     # Note: To ensure hermeticity as much as possible, only get git from
+     # host, then clear PATH.
++    # WILD_BRANDING_PATCHED: prefer .ksu_commit_hash, strip -dirty.
+     script = """
+         GIT=$(command -v git)
++        CAT=$(command -v cat)
+         PATH=
+-        if head=$($GIT rev-parse --verify --short=12 HEAD 2>/dev/null); then
++        if [ -f "$PWD/.ksu_commit_hash" ]; then
++            head=$($CAT "$PWD/.ksu_commit_hash")
+             echo -n -g"$head"
+-        fi
+-        if {
+-            $GIT --no-optional-locks status -uno --porcelain 2>/dev/null ||
+-            $GIT diff-index --name-only HEAD
+-        } | read placeholder; then
+-            echo -n -dirty
++        elif head=$($GIT rev-parse --verify --short=12 HEAD 2>/dev/null); then
++            echo -n -g"$head"
+         fi
+     """
+     popen = subprocess.Popen(script, shell=True, text=True,
