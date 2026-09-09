@@ -248,6 +248,7 @@ jobs:
         with:
           flavor: ${{ inputs.root_flavor }}
           commit: ${{ inputs.root_commit }}
+        brand_name: ${{ inputs.brand_name }}
 
       - name: Mark No Root build metadata
         if: inputs.root_flavor == 'none'

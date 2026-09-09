@@ -7,6 +7,10 @@ inputs:
   commit:
     description: 'Full immutable commit SHA'
     required: true
+  brand_name:
+    description: 'Branding text used as KBUILD_BUILD_USER in uname -v (default Wild)'
+    required: false
+    default: Wild
 
 runs:
   using: composite
@@ -87,7 +91,15 @@ runs:
         fi
 
         git clone --no-checkout "$repo" "$directory"
-        git -C "$directory" fetch --depth=1 origin "$expected_commit"
+        # Full (non-shallow) fetch: the commit count fed into the flavor version
+        # scheme must cover the whole history. A --depth=1 fetch truncates the
+        # graph and makes 'git rev-list --count' (and merge-base) report wrong
+        # numbers, which desynchronizes the kernel-reported version from the
+        # manager build (same failure mode the old KSUN version fix addressed).
+        git -C "$directory" fetch origin "$expected_commit"
+        if [ -f "$directory/.git/shallow" ]; then
+          git -C "$directory" fetch --unshallow origin 2>/dev/null || true
+        fi
         git -C "$directory" checkout --detach "$expected_commit"
         actual_commit="$(git -C "$directory" rev-parse HEAD)"
         if [ "$actual_commit" != "$expected_commit" ]; then
@@ -111,6 +123,153 @@ runs:
         echo "ROOT_MANAGER=$manager" >> "$GITHUB_ENV"
         echo "ROOT_VERSION=$root_version" >> "$GITHUB_ENV"
         echo "ROOT_COMMIT=$actual_commit" >> "$GITHUB_ENV"
+
+    - name: Compute root flavor version and Wild branding env
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      run: |
+        set -euo pipefail
+
+        flavor="${{ inputs.flavor }}"
+        case "$flavor" in
+          kernelsu)    directory="KernelSU";;
+          next)        directory="KernelSU-Next";;
+          bakasu)      directory="BakaSU";;
+          finasu)      directory="FinaSU";;
+          sukisu-ultra) directory="SukiSU-Ultra";;
+          kowsu)       directory="KowSU";;
+          *) echo "Unsupported root flavor: $flavor" >&2; exit 2;;
+        esac
+
+        # Per-flavor version scheme, mirroring each flavor's kernel/Kbuild:
+        #   kernelsu/next/kowsu : 30000 + commit count
+        #   bakasu              : 30000 + commit count + 700  (ReSukiSU successor,
+        #                         scheme verified against Baka-SU/BakaSU kernel/Kbuild)
+        #   finasu              : 30000 + commit count        (verified against
+        #                         LyraVoid/FinaSU kernel/Kbuild)
+        #   sukisu-ultra        : 40000 + commit count - 2815
+        # The count is taken from the merge-base with the flavor's base branch
+        # (old KSUN way) so fork-only commits (e.g. pershoot dev-susfs) do not
+        # inflate the version away from the matching official manager build.
+        # EXCEPTION - sukisu-ultra: upstream counts the TIP of main no matter
+        # which branch is built (kernel/Kbuild and the builtin branch's
+        # kernel/Makefile both hardcode REPO_BRANCH := main and prefer the
+        # GitHub commit count), so its version is branch-independent. Its
+        # builtin branch shared no git history with main until upstream's
+        # 2026-10-18 graft merge (94d6d792), which made merge-base counting
+        # fail silently and the HEAD fallback below count builtin-only
+        # commits instead: pins built 2026-09..2026-10-27 reported ~37,9xx
+        # where official kernels reported ~40,9xx. Mirror upstream: count
+        # origin/main's tip directly.
+        case "$flavor" in
+          kernelsu)     base_branch="main";   ver_base=30000; ver_offset=0;;
+          next)         base_branch="dev";    ver_base=30000; ver_offset=0;;
+          bakasu)       base_branch="main";   ver_base=30000; ver_offset=700;;
+          finasu)       base_branch="master"; ver_base=30000; ver_offset=0;;
+          sukisu-ultra) base_branch="main";   ver_base=40000; ver_offset=-2815;;
+          kowsu)        base_branch="master"; ver_base=30000; ver_offset=0;;
+        esac
+
+        if [ "$flavor" = "sukisu-ultra" ]; then
+          base_commit="refs/remotes/origin/main"
+        else
+          base_commit="$(git -C "$directory" merge-base HEAD "refs/remotes/origin/$base_branch" 2>/dev/null || true)"
+          if [ -z "$base_commit" ]; then
+            # Pinned commit may live on another remote branch (e.g. builtin).
+            while read -r ref; do
+              base_commit="$(git -C "$directory" merge-base HEAD "$ref" 2>/dev/null || true)"
+              [ -n "$base_commit" ] && break
+            done < <(git -C "$directory" branch -r --format='%(refname:short)' --contains HEAD 2>/dev/null | grep '^origin/' || true)
+          fi
+          [ -n "$base_commit" ] || base_commit="HEAD"
+        fi
+
+        commits_count="$(git -C "$directory" rev-list --count "$base_commit" 2>/dev/null || echo 0)"
+        root_flavor_version="$(expr "$ver_base" "+" "$commits_count" "+" "$ver_offset")"
+        root_tag="$(git -C "$directory" describe --tags --abbrev=0 "$base_commit" 2>/dev/null || echo "")"
+        root_tag="${root_tag:-unknown}"
+
+        echo "Root flavor version: $root_flavor_version (base_commit=$(git -C "$directory" rev-parse --short=12 "$base_commit" 2>/dev/null || echo "$base_commit"), count=$commits_count, tag=$root_tag)"
+
+        # Drift guard (sukisu-ultra): cross-check our main count against the
+        # same GitHub API endpoint upstream's Kbuild prefers, so a stale or
+        # truncated clone is surfaced loudly instead of drifting silently.
+        if [ "$flavor" = "sukisu-ultra" ]; then
+          github_count="$(curl -sI "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/commits?sha=main&per_page=1" 2>/dev/null | grep -i '^link:' | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p' || true)"
+          if [ -n "$github_count" ] && [ "$github_count" != "$commits_count" ]; then
+            delta=$((github_count - commits_count))
+            [ "$delta" -lt 0 ] && delta=$((-delta))
+            if [ "$delta" -gt 10 ]; then
+              echo "::warning::SukiSU-Ultra version drift: local count=$commits_count vs GitHub count=$github_count; official kernels report $((ver_base + github_count + ver_offset)), pinning $root_flavor_version"
+            fi
+          fi
+        fi
+
+        # Pin the flavor version into its Kbuild so the value stays correct
+        # inside the build sandbox, where the flavor's .git may be absent or
+        # shallow and its own fallbacks (1 / 16 / 13000) would win instead.
+        # sukisu-ultra: pin KSU_VERSION_FULL (the live macro - supercall
+        # GET_FULL_VERSION feeds the manager's isFullFeatured() gate) with a
+        # deterministic v<tag>-<sha>@<branch> string; its KSU_VERSION_TAG is
+        # dead code with no kernel consumer. KernelSU-Next's
+        # kernel/include/ksu.h reads KSU_VERSION_TAG, so the tag pin stays
+        # for every other flavor.
+        root_full=""
+        if [ "$flavor" = "sukisu-ultra" ]; then
+          pin_branch="$(git -C "$directory" branch -r --contains HEAD --format='%(refname:short)' 2>/dev/null | grep '^origin/' | grep -v 'HEAD' | head -1 | sed 's|^origin/||' || true)"
+          # upstream strips the tag's v prefix then re-adds it (v<VERSION_TAG>-...); mirror that
+          root_full="v${root_tag#v}-$(git -C "$directory" rev-parse --short=8 HEAD)@${pin_branch:-unknown}"
+        fi
+        # main's integration file is kernel/Kbuild; the builtin branch has no
+        # Kbuild at all and integrates via kernel/Makefile - without this
+        # fallback the pin silently no-ops on every SUSFS/builtin build and
+        # the kernel reports whatever upstream's own Kbuild computes in the
+        # sandbox (41100 when .git/network are visible, 40000/13000 when not)
+        # while the branding envs claim the CI-computed number.
+        kbuild_file="$directory/kernel/Kbuild"
+        if [ ! -f "$kbuild_file" ] && [ -f "$directory/kernel/Makefile" ]; then
+          kbuild_file="$directory/kernel/Makefile"
+          echo "No kernel/Kbuild; pinning kernel/Makefile instead (builtin layout)"
+        fi
+        if [ -f "$kbuild_file" ]; then
+          if grep -q 'WILD_VERSION_PIN' "$kbuild_file"; then
+            echo "$kbuild_file already pinned; skipping"
+          else
+            {
+              echo ''
+              echo '# WILD_VERSION_PIN: deterministic version set by CI (sandbox-proof)'
+              echo 'ccflags-y := $(filter-out -DKSU_VERSION=%,$(ccflags-y)) -DKSU_VERSION='"$root_flavor_version"
+              if [ -n "$root_full" ]; then
+                echo 'ccflags-y := $(filter-out -DKSU_VERSION_FULL=%,$(ccflags-y)) -DKSU_VERSION_FULL=\"'"$root_full"'\"'
+              else
+                echo 'ccflags-y := $(filter-out -DKSU_VERSION_TAG=%,$(ccflags-y)) -DKSU_VERSION_TAG=\"'"$root_tag"'\"'
+              fi
+            } >> "$kbuild_file"
+            echo "Pinned version $root_flavor_version into $kbuild_file"
+          fi
+        else
+          echo "::warning::$kbuild_file not found; flavor version not pinned"
+        fi
+
+        # Wild branding env (consumed by apply-kernel-branding/build-kernel).
+        brand_raw="${{ inputs.brand_name }}"
+        brand="$(printf '%s' "$brand_raw" | tr '[:upper:]' '[:lower:]')"
+        if ! printf '%s' "$brand" | grep -Eq '^[a-z0-9_.-]{1,32}$'; then
+          echo "::warning::brand_name '$brand_raw' invalid after normalization; falling back to 'wild'"
+          brand="wild"
+        fi
+
+        WILD_KSU_COMMIT="$(printf '%.12s' "$(git -C "$directory" rev-parse HEAD)")"
+        WILD_BUILD_USER="$brand"
+        WILD_BUILD_HOST="${directory}-v${root_flavor_version}"
+
+        {
+          echo "WILD_KSU_COMMIT=$WILD_KSU_COMMIT"
+          echo "WILD_KSU_VERSION=$root_flavor_version"
+          echo "WILD_BUILD_USER=$WILD_BUILD_USER"
+          echo "WILD_BUILD_HOST=$WILD_BUILD_HOST"
+          echo "WILD_KSU_FORK=$directory"
+        } >> "$GITHUB_ENV"
 
     - name: Enable root configuration
       uses: ./.github/actions/set-kernel-config
