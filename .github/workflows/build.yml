@@ -183,6 +183,7 @@ jobs:
       with:
         flavor: ${{ inputs.root_flavor }}
         commit: ${{ inputs.root_commit }}
+        brand_name: ${{ inputs.brand_name }}
 
     - name: Inject custom KSU manager signature list
       if: inputs.root_flavor == 'next'
