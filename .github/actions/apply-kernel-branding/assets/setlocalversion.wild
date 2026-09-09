@@ -1,0 +1,31 @@
+#!/bin/sh
+# WILD_BRANDING_WRAPPER
+# Wild kernel branding wrapper for legacy (build.sh) builds.
+#
+# Delegates to scripts/setlocalversion.orig (the upstream script, patched by
+# apply-kernel-branding/action.yml to substitute .ksu_commit_hash and strip
+# -dirty). Page-size suffix is NOT appended here — it comes from
+# CONFIG_LOCALVERSION in the kernel defconfig (same as upstream).
+set -eu
+
+# Resolve srctree from args (mirrors upstream setlocalversion arg handling).
+WILD_SRCTREE="."
+for _wild_arg in "$@"; do
+    case "$_wild_arg" in
+        --no-local) ;;
+        *) WILD_SRCTREE="$_wild_arg" ;;
+    esac
+done
+unset _wild_arg
+
+WILD_ORIG="$(dirname "$0")/setlocalversion.orig"
+WILD_ORIG_OUTPUT=""
+if [ -x "$WILD_ORIG" ]; then
+    WILD_ORIG_OUTPUT=$("$WILD_ORIG" "$@" 2>/dev/null) || WILD_ORIG_OUTPUT=""
+fi
+
+# Strip trailing -dirty (defensive: .orig is already patched to not emit it).
+WILD_DF="-d""irty"
+WILD_ORIG_OUTPUT="${WILD_ORIG_OUTPUT%"$WILD_DF"}"
+
+printf '%s\n' "$WILD_ORIG_OUTPUT"
