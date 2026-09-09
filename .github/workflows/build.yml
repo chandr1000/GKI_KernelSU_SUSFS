@@ -240,12 +240,22 @@ jobs:
     - name: Mark No Root build metadata
       if: inputs.root_flavor == 'none'
       shell: bash
+      env:
+        BRAND_RAW: ${{ inputs.brand_name }}
       run: |
+        BRAND="$(printf '%s' "$BRAND_RAW" | tr '[:upper:]' '[:lower:]')"
+        printf '%s' "$BRAND" | grep -Eq '^[a-z0-9_.-]{1,32}$' || BRAND="wild"
         {
           echo "ROOT_IMPLEMENTATION=none"
           echo "ROOT_MANAGER=N/A"
           echo "ROOT_VERSION=N/A"
           echo "ROOT_COMMIT=N/A"
+          # No root: branding falls back to the kernel source's own git HEAD
+          # for uname -r; uname -v still carries the (custom) brand.
+          echo "WILD_KSU_COMMIT="
+          echo "WILD_BUILD_USER=$BRAND"
+          echo "WILD_BUILD_HOST="
+          echo "WILD_KSU_FORK=none"
         } >> "$GITHUB_ENV"
 
     - name: Disable SUSFS for ReSukiSU without SUSFS feature
@@ -457,6 +467,9 @@ jobs:
         version: ${{ inputs.version }}
         sublevel: ${{ steps.extract.outputs.sublevel }}
         brand_name: ${{ inputs.brand_name }}
+        ksu_commit: ${{ env.WILD_KSU_COMMIT }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
 
     - name: Remove Protected Exports
       uses: ./.github/actions/remove-protected-exports
@@ -563,6 +576,8 @@ jobs:
       uses: ./.github/actions/build-kernel
       with:
         version: ${{ inputs.version }}
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
     - name: Get Cache Stats
       uses: ./.github/actions/cache-stats
@@ -610,6 +625,8 @@ jobs:
       uses: ./.github/actions/build-kernel
       with:
         version: ${{ inputs.version }}
+        kbuild_build_user: ${{ env.WILD_BUILD_USER }}
+        kbuild_build_host: ${{ env.WILD_BUILD_HOST }}
 
     - name: Consolidated Build Summary
       if: always()
