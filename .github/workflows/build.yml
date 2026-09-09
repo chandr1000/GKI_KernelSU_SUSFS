@@ -177,6 +177,58 @@ jobs:
         flavor: ${{ inputs.root_flavor }}
         commit: ${{ inputs.root_commit }}
 
+    - name: Inject custom KSU manager signature list
+      if: inputs.root_flavor == 'next'
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      env:
+        NEW_LIST: ${{ vars.KSU_NEXT_MANAGER_LIST }}
+      run: |
+        set -euo pipefail
+        KBUILD_FILE="KernelSU-Next/kernel/Kbuild"
+        if [ ! -f "$KBUILD_FILE" ]; then
+          echo "::error::Kbuild not found at $KBUILD_FILE - was Setup Selected Root Implementation skipped?"
+          exit 1
+        fi
+        if [ -z "${NEW_LIST}" ]; then
+          echo "::warning::repo variable KSU_NEXT_MANAGER_LIST is empty; using Kbuild defaults"
+          exit 0
+        fi
+        export KBUILD_FILE
+        python3 - <<'PYEOF'
+        import os, re
+
+        path = os.environ["KBUILD_FILE"]
+        new_list = os.environ["NEW_LIST"]
+
+        if not re.fullmatch(r"0x[0-9a-fA-F]+:[0-9a-fA-F]{64}(,0x[0-9a-fA-F]+:[0-9a-fA-F]{64})*", new_list):
+            raise SystemExit("::error::KSU_NEXT_MANAGER_LIST format invalid (expected 0x<ver>:<sha256>,...)")
+
+        with open(path) as f:
+            content = f.read()
+
+        if re.search(r"(?m)^KSU_NEXT_MANAGER_LIST :=", content):
+            new_content, n = re.subn(
+                r"(?m)^KSU_NEXT_MANAGER_LIST := .*$",
+                "KSU_NEXT_MANAGER_LIST := " + new_list,
+                content,
+            )
+            if n != 1:
+                raise SystemExit(f"::error::expected exactly 1 KSU_NEXT_MANAGER_LIST assignment, found {n}")
+            with open(path, "w") as f:
+                f.write(new_content)
+            print(f"Replaced KSU_NEXT_MANAGER_LIST with: {new_list}")
+        elif re.search(r"(?m)^KSU_NEXT_MANAGER_HASH :=", content):
+            print("::warning::official KernelSU-Next Kbuild (non-SUSFS) has no manager list mechanism; keeping defaults")
+        else:
+            print("::warning::no manager hash variables found in Kbuild; skipping")
+
+        with open(path) as f:
+            for line in f:
+                if line.startswith("KSU_NEXT_MANAGER"):
+                    print("Kbuild:", line.rstrip())
+        PYEOF
+
     - name: Disable SUSFS for ReSukiSU without SUSFS feature
       if: inputs.root_flavor == 'resukisu' && !contains(inputs.feature_set, 'SUSFS')
       uses: ./.github/actions/set-kernel-config
