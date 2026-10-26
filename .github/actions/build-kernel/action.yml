@@ -175,6 +175,20 @@ runs:
           fi
         fi
 
+        # KPM bridge probe (sukisu-ultra only): the KPM Kconfig selects
+        # KALLSYMS and KALLSYMS_ALL, so a missing entry means the config
+        # stage dropped it (kleaf flavour builds have done this before).
+        if [ "${ROOT_IMPLEMENTATION:-}" = 'sukisu-ultra' ]; then
+          if ! grep -q '^CONFIG_KPM=y' "$CONFIG_FILE"; then
+            echo "ERROR: CONFIG_KPM missing from final .config (root: sukisu-ultra)" >&2
+            exit 1
+          fi
+          if ! grep -q '^CONFIG_KALLSYMS_ALL=y' "$CONFIG_FILE"; then
+            echo "ERROR: CONFIG_KALLSYMS_ALL missing from final .config (root: sukisu-ultra)" >&2
+            exit 1
+          fi
+        fi
+
         if [ "$PAGE_SIZE" = "16k" ]; then
           want_on="CONFIG_ARM64_16K_PAGES=y"
           want_off="# CONFIG_ARM64_4K_PAGES is not set"
@@ -194,6 +208,93 @@ runs:
           exit 1
         fi
         echo "Page size verified: ${PAGE_SIZE}"
+
+    - name: 'Inject KPM (kpimg) into Kernel Image'
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      env:
+        KPM_PATCH_REPO: https://github.com/ShirkNeko/SukiSU_KernelPatch_patch
+        KPM_PATCH_REPO_SHA: d958d2582fe3b7eaaeaf238b3bf9af4507a81174
+        KPIMG_URL: https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/kpimg
+        # Superkey '123' is not a secret: the SukiSU manager itself hardcodes
+        # "-s 123" (manager KpmPatchCommand.kt) for every patch it applies, and
+        # kptools merely requires a non-empty key at patch time. The SukiSU
+        # kpimg fork has no key-gated privilege surface: its supercall hook
+        # ignores EL0 callers entirely (kernel/patch/sukisu/sukisu.c) and KPM
+        # module ops are gated by the KernelSU extension ioctl + manager
+        # signature, not by the key. Root authorization is KernelSU's
+        # allowlist, unchanged by this step.
+        KPM_SUPERKEY: '123'
+      run: |
+        set -euo pipefail
+
+        # KPM needs two halves: the kernel-side bridge (CONFIG_KPM=y, built
+        # above) and KernelPatch's kpimg engine, which is not part of the
+        # kernel build and must be injected into the finished Image with
+        # kptools. Without it the manager's KPM probe calls the unhooked
+        # __arm64_sys_truncate, gets an error instead of the KP ABI version,
+        # and reports "KPM not supported" despite CONFIG_KPM=y.
+        if [ "${ROOT_IMPLEMENTATION:-}" != "sukisu-ultra" ]; then
+          echo "Root flavor '${ROOT_IMPLEMENTATION:-<none>}' has no KPM bridge; skipping kpimg injection."
+          exit 0
+        fi
+
+        IMG=""
+        for candidate in bazel-bin/common/kernel_aarch64/Image /home/runner/out/dist/Image; do
+          if [ -f "$candidate" ]; then IMG="$candidate"; break; fi
+        done
+        if [ -z "$IMG" ]; then
+          echo "ERROR: kernel Image not found (tried bazel-bin/common/kernel_aarch64/Image and /home/runner/out/dist/Image)" >&2
+          exit 1
+        fi
+        OLD_SIZE=$(stat -c%s "$IMG")
+        echo "KPM target Image: $IMG ($OLD_SIZE bytes)"
+
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "$WORK_DIR"' EXIT
+
+        # The prebuilt kptools the manager downloads is an aarch64 Android
+        # binary (interpreter /system/bin/linker64) and cannot run on x86_64
+        # runners, so build the host tool from a pinned source snapshot.
+        echo "Fetching kptools source: ${KPM_PATCH_REPO} @ ${KPM_PATCH_REPO_SHA}"
+        curl -fsSL "${KPM_PATCH_REPO}/archive/${KPM_PATCH_REPO_SHA}.tar.gz" -o "$WORK_DIR/kptools-src.tar.gz"
+        tar -xzf "$WORK_DIR/kptools-src.tar.gz" -C "$WORK_DIR"
+        if ! [ -e /usr/include/zlib.h ]; then
+          echo "Installing zlib headers for the static kptools link"
+          sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev
+        fi
+        make -C "$WORK_DIR/SukiSU_KernelPatch_patch-${KPM_PATCH_REPO_SHA}/tools" -j"$(nproc)"
+        KPTOOLS="$WORK_DIR/SukiSU_KernelPatch_patch-${KPM_PATCH_REPO_SHA}/tools/kptools"
+        "$KPTOOLS" -v
+
+        # kpimg is appended data, not a runner-executable: take the canonical
+        # prebuilt from the exact URL the SukiSU manager's own KPM boot
+        # patcher downloads, so the engine/bridge ABI pairing matches what
+        # userspace expects.
+        curl -fsSL "$KPIMG_URL" -o "$WORK_DIR/kpimg"
+        [ -s "$WORK_DIR/kpimg" ] || { echo "ERROR: downloaded kpimg is empty" >&2; exit 1; }
+
+        # Pre-flight (informational): the embedded ikconfig should already
+        # carry the bridge configs; the authoritative check is the .config
+        # probe in the verify step above.
+        "$KPTOOLS" -f -i "$IMG" 2>/dev/null | grep -E '^CONFIG_(KPM|KALLSYMS|KALLSYMS_ALL)=' \
+          || echo "NOTE: ikconfig dump unavailable or incomplete (kernel may lack CONFIG_IKCONFIG); continuing"
+
+        "$KPTOOLS" -p -s "$KPM_SUPERKEY" -i "$IMG" -k "$WORK_DIR/kpimg" -o "$IMG.kpm"
+
+        NEW_SIZE=$(stat -c%s "$IMG.kpm")
+        [ -s "$IMG.kpm" ] || { echo "ERROR: kptools produced no output" >&2; exit 1; }
+        if [ "$NEW_SIZE" -le "$OLD_SIZE" ]; then
+          echo "ERROR: patched Image did not grow ($OLD_SIZE -> $NEW_SIZE); kpimg was not appended" >&2
+          exit 1
+        fi
+        # kptools must recognise its own patch: -l parses the KP preset and
+        # errors out on an unpatched image.
+        "$KPTOOLS" -l -i "$IMG.kpm"
+        echo "$IMG.kpm ikconfig: $("$KPTOOLS" -f -i "$IMG.kpm" 2>/dev/null | grep -E '^CONFIG_KPM=' || echo '(ikconfig dump unavailable)')"
+
+        mv "$IMG.kpm" "$IMG"
+        echo "KPM engine injected into $IMG ($OLD_SIZE -> $NEW_SIZE bytes, superkey '$KPM_SUPERKEY')"
 
     - name: 'Gather Build Artifacts'
       shell: bash
