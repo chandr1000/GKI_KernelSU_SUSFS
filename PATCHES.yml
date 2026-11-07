@@ -36,7 +36,7 @@ series:
 patches:
   # --- F1: BORE scheduler ---------------------------------------------------
   - id: bore-scheduler                   # 6.6 default variant (5.9.6 generation)
-    enabled: true
+    enabled: false
     kind: patch
     patch: patches/bore/0001-linux6.6.67-gki-bore-5.9.6.patch
     kernels: ["6.6"]
@@ -110,7 +110,7 @@ patches:
       MODVERSIONS devices at first-stage init (see bore-scheduler notes).
 
   - id: bore-scheduler-legacy-510-515    # 5.10 + 5.15 probe families
-    enabled: true
+    enabled: false
     kind: patch
     patch: patches/bore/legacy/0001-linux5.15.y-bore5.1.0.patch
     kernels: ["5.10", "5.15"]
@@ -126,7 +126,7 @@ patches:
       8-scalar KABI relocation — see bore-kabi-legacy below.
 
   - id: bore-scheduler-legacy-61         # 6.1 probe family
-    enabled: true
+    enabled: false
     kind: patch
     patch: patches/bore/legacy/0001-linux6.1.y-bore5.1.0.patch
     kernels: ["6.1"]
@@ -141,7 +141,7 @@ patches:
       bore-kabi-legacy.
 
   - id: bore-kabi-legacy
-    enabled: true
+    enabled: false
     kind: script
     script: scripts/bore_5x_fixup.sh
     kernels: ["5.10", "5.15", "6.1"]
@@ -155,7 +155,7 @@ patches:
       active dep; on 6.1 only the 6.1 patch.
 
   - id: bore-scheduler-612
-    enabled: true
+    enabled: false
     kind: script
     script: scripts/bore_612_apply.sh
     kernels: ["6.12"]
