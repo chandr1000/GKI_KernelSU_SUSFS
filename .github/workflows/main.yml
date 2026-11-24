@@ -77,7 +77,7 @@ on:
           - FinaSU
           - No Root
           - All (KernelSU-Next + KernelSU + BakaSU)
-        default: SukiSU-Ultra
+        default: KernelSU-Next
       use_susfs:
         description: "SUSFS"
         type: boolean
